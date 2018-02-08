@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="description" content="RSA-OAEP client for IE">
+    <meta name="author" content="Ramesh Naapa Sekhar, PlumChoice">
+    <meta name="version" content="1.0 (2018-Jan-15)">
+	<meta http-equiv="X-UA-Compatible" content="IE=11" />
+</head>
+
+<body>
+    <button type="button" onclick="javascript:runTest()">Run Test</button>
+
+    <!-- 
+        This example client uses the following javascript libraries
+        1) https://github.com/douglascrockford/JSON-js/blob/master/json_parse.js
+        2) http://crypto.stanford.edu/sjcl/sjcl.js
+     -->
+    <script language="JavaScript" type="text/javascript" src="json_parse.js"></script>
+    <script language="JavaScript" type="text/javascript" src="sjcl.js"></script>
+    <script type="text/javascript">
+        if (!(navigator.userAgent.indexOf("MSIE") != -1) 
+            && !(!!document.documentMode == true)) {
+            alert('The Edge, Firefox or Chrome are not compatible with this test page. Please use IE.');
+        } 
+    </script>    
+    <script type="text/javascript">
+    
+        var crypto = window.crypto || window.msCrypto;
+        
+        var getResponseJSON = 
+        '{'+
+            '"code": "SUCCESS",'+
+            '"data": {'+
+                '"jwk": {'+
+                    '"kty": "RSA",'+
+                    '"e": "AQAB",'+
+                    '"n": "oBodycx3Sul-60slmEvcEAGzRnR_3pLblpsrXvG_5KZrzmD9AewExJba8zPdhJXPtut_SC1cU4v_TqYYk96ZbrjsEWXMsrO16QbK5qo_UyBi8HIZvGfLDtAsbq5O11Bj6ADUKeeeknkQZex6MfrFFAiEVSb2UerD366xeOuC5Kgx8Sh74EiYzjThoelIYleJLXbTq-Su2oadm5fnHhUwcExhVr9bnHzEEtf9JU28Cpxa1VgBQxGdhxwDbjljuhEnGvkDC3wjWuiV0E7l2ExayhgfvH9_cMmTzH_f9-yO-LrHDt6ib38H0S0bIzmzcgPSUd7FguUbHssSXfHS6GHZow"'+
+                '},'+
+                '"algorithm": {'+
+                    '"name": "RSA-OAEP",'+
+                        '"hash": {'+
+                            '"name": "SHA-256"'+
+                        '}'+
+                '},'+
+                '"max_size": 190'+
+            '}'+
+        '}';
+        
+        //This is the sample Credit Card data without address.
+        var creditCardJSON = '{ "cc_data": { "type": "A", "name": "Ramesh Sekhar", "number": 343434343434343, "cvv": "1234", "exp_month": 12, "exp_year": 2018 }, "usa_address": { "address1": "5 federal St", "address2": "Suite 200", "city": "Austin", "state": "TX", "zip_code": "73301" } }';
+        
+        
+        function runTest() {        
+            //Parse getResponseJSON to extract jwk, algorithm and max_size
+            var map = json_parse(getResponseJSON);
+            var jwk = map.data.jwk;
+            var algorithm = map.data.algorithm;
+            var max_size = map.data.max_size;  
+            
+            //Import the key and then encrypt the data.
+            jwkBuffer = stringToArrayBuffer(JSON.stringify(jwk));
+            var genOp = crypto.subtle.importKey("jwk", jwkBuffer, algorithm, false, ["encrypt"]);
+
+            genOp.onerror = function(e) {
+                console.error(e);
+            };
+        
+            genOp.oncomplete = function(e) {
+                var publicKey = e.target.result;
+                console.log(publicKey);
+                createPostRequest(creditCardJSON, algorithm, publicKey, jwk, max_size);
+            }
+        
+        }        
+        
+        //This will be populated with the JSON data for the POST request. 
+        var postRequestJSON = "";  
+        
+        // create the encryptedData string by encrypting each of the max_size blocks
+        // The max size that confirms to schema with the inline json is 378. 
+        // So we can safely split it in to two strings.
+        var dataArray1 = "";
+        var dataArray2 = "";
+        
+        //Encrypted data
+        var encodedData1 = "";
+        var encodedData2 = "";
+        
+        //This function creates the JSON object for the POST request. 
+        function createPostRequest(creditCardJSON, algorithm, publicKey, jwk, max_size) {
+
+            // split the credit card JSON object string into max_size blocks
+            var dataArray = chunkString(creditCardJSON, max_size);
+            
+            
+            dataArray1 = dataArray[0];
+            if(dataArray.length == 2) {
+                dataArray2 = dataArray[1];
+            }
+            console.log("dataArray1: " + dataArray1);
+            console.log("dataArray2: " + dataArray2);
+            
+            encryptDataArray1WithPublicKey(algorithm, publicKey, jwk, dataArray1);                
+                
+        }
+        
+        // This function encrypts the data block 
+        function encryptDataArray1WithPublicKey(algorithm, publicKey, jwk, data) {
+            var encodedData = "";
+            var textToEncrypt = stringToArrayBuffer(data);
+            var algo = JSON.stringify(algorithm);
+            var algoObj = JSON.parse(algo);
+                        
+            var encOp = crypto.subtle.encrypt(
+                algoObj,
+                publicKey,
+                textToEncrypt
+            );
+            
+            encOp.onerror = function(e) {
+                console.error(e);
+            };
+    
+            encOp.oncomplete = function(e) {
+                var encrypted = e.target.result;
+                var rdata = String.fromCharCode.apply(null, new Uint8Array(encrypted));
+                encodedData = window.btoa(rdata);     
+                console.log("encodedData1: " + encodedData);
+                encodedData1 = encodedData;
+                
+                //If the dataArray2 is not null or conatins data.
+                if(dataArray2) {
+                    encryptDataArray2WithPublicKey(algorithm, publicKey, jwk, dataArray2);
+                } else {                
+                    var encryptedData = encodedData1;            
+                
+                    // create the HMAC using the SHA256 hash, public key and the encryptedData.
+                    var signature = createHMAC(jwk.n, encryptedData);            
+                                
+                    // create the JSON object for the POST request using the customer number, encryptedData and hmac.
+                    postRequestJSON =             
+                    '{'+
+                        '"profile_details": {'+
+                            '"customer_number": 87654321,'+
+                            '"encrypted_data": "' + encryptedData + '",'+
+                            '"hmac": "' + signature + '"'+
+                        '}'+
+                    '}';
+                    
+                    // display the JSON object string 
+                    console.log("postRequestJSON2: " + postRequestJSON);
+                }
+            };
+        }
+        
+        // This function encrypts the data block 
+        function encryptDataArray2WithPublicKey(algorithm, publicKey, jwk, data) {
+            var encodedData = "";
+            var textToEncrypt = stringToArrayBuffer(data);
+            var algo = JSON.stringify(algorithm);
+            var algoObj = JSON.parse(algo);
+                        
+            var encOp = crypto.subtle.encrypt(
+                algoObj,
+                publicKey,
+                textToEncrypt
+            );
+            
+            encOp.onerror = function(e) {
+                console.error(e);
+            };
+    
+            encOp.oncomplete = function(e) {
+                var encrypted = e.target.result;
+                var rdata = String.fromCharCode.apply(null, new Uint8Array(encrypted));
+                encodedData = window.btoa(rdata);     
+                console.log("encodedData1: " + encodedData);
+                encodedData2 = encodedData;
+                
+                var encryptedData = encodedData1 + encodedData2;            
+            
+                // create the HMAC using the SHA256 hash, public key and the encryptedData.
+                var signature = createHMAC(jwk.n, encryptedData);            
+                            
+                // create the JSON object for the POST request using the customer number, encryptedData and hmac.
+                postRequestJSON =             
+                '{'+
+                    '"profile_details": {'+
+                        '"customer_number": 87654321,'+
+                        '"encrypted_data": "' + encryptedData + '",'+
+                        '"hmac": "' + signature + '"'+
+                    '}'+
+                '}';
+                
+                // display the JSON object string 
+                console.log("postRequestJSON2: " + postRequestJSON); 
+            };
+        }
+        
+        function chunkString(str, length) {
+          return str.match(new RegExp('.{1,' + length + '}', 'g'));
+        }
+        
+        function createHMAC(publicKeyStr, data){ 
+            hmac = new sjcl.misc.hmac(sjcl.codec.utf8String.toBits(publicKeyStr), sjcl.hash.sha256);
+            return signature = sjcl.codec.hex.fromBits(hmac.encrypt(data));
+        }
+        
+        function stringToArrayBuffer(str) {
+            var buf = new ArrayBuffer(str.length);
+            var bufView = new Uint8Array(buf);
+            for (var i = 0, strLen = str.length; i < strLen; i++) {
+                bufView[i] = str.charCodeAt(i);
+            }
+            return buf;
+        }
+        
+        </script> 
+</body>
+
+</html>
